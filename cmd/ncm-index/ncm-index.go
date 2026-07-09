@@ -38,12 +38,12 @@ var extToLanguage = map[string]string{
 
 type LanguageFiles map[string][]string
 
-func ScanAndDiscoverLanguages(path string) (LanguageFiles, error) {
+func ScanAndDiscoverLanguages(root string) (LanguageFiles, error) {
 	result := make(LanguageFiles)
 
-	err := filepath.WalkDir(path, func(path string, data fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(path string, data fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return err // Return error if there is an error walking the directory. STOPS right away.
 		}
 
 		// Directory
