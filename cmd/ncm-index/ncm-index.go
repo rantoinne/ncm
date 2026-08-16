@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-var ignoreFiles = map[string]bool{
+var ignoreFilesAndFolders = map[string]bool{
 	".git":           true,
 	".plans":         true,
 	".vscode":        true,
@@ -48,14 +48,14 @@ func ScanAndDiscoverLanguages(root string) (LanguageFiles, error) {
 
 		// Directory
 		if data.IsDir() {
-			if ignoreFiles[data.Name()] {
+			if ignoreFilesAndFolders[data.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
 		// File
-		if ignoreFiles[data.Name()] {
+		if ignoreFilesAndFolders[data.Name()] {
 			return nil
 		}
 
