@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package ncm.schema;
+
+option go_package = "github.com/rantoinne/ncm/schema;schema";
+
+// Stable ID form: {repo_id}:{commit_sha}:{file_path}#{qualified_name}
+
+message FunctionNode {
+  string id = 1;
+  string repo_id = 2;
+  string file_path = 3;
+  string name = 4;
+  string signature = 5;
+  repeated string calls = 6;
+  string commit_sha = 7;
+  string kind = 8;
+  int32 start_line = 9;
+  int32 end_line = 10;
+}
+
+message FileNode {
+  string id = 1;
+  string repo_id = 2;
+  string path = 3;
+  string language = 4;
+  string package = 5;
+  repeated string imports = 6;
+  string commit_sha = 7;
+}
+
+message ModuleNode {
+  string id = 1;
+  string repo_id = 2;
+  string name = 3;
+  string path = 4;
+  string language = 5;
+}
+
+message ConceptNode {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message CommitNode {
+  string id = 1;
+  string repo_id = 2;
+  string sha = 3;
+  string message = 4;
+  string author = 5;
+  string date = 6;
+}
+
+message Edge {
+  string id = 1;
+  string type = 2;
+  string from_id = 3;
+  string to_id = 4;
+  double confidence = 5;
+  repeated string evidence = 6;
+  string first_seen = 7;
+  string last_seen = 8;
+}
+
+message ArtifactManifest {
+  string repo_id = 1;
+  string root = 2;
+  string commit_sha = 3;
+  map<string, int32> languages = 4;
+  int32 file_count = 5;
+  string scanned_at = 6;
+}

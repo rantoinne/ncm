@@ -65,6 +65,7 @@ type DiscoveryResult struct {
 
 // ScanAndDiscoverLanguages walks root and returns discovered source files by language.
 func ScanAndDiscoverLanguages(root string) (*DiscoveryResult, error) {
+	// TODO: Might be redundant given this is being called from Scan which already calls filepath.Abs
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err

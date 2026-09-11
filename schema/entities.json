@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rantoinne/ncm/schema/entities.json",
+  "title": "NCM Entities",
+  "description": "JSON Schema equivalents for NCM shared entity messages",
+  "oneOf": [
+    { "$ref": "#/$defs/FunctionNode" },
+    { "$ref": "#/$defs/FileNode" },
+    { "$ref": "#/$defs/ModuleNode" },
+    { "$ref": "#/$defs/ConceptNode" },
+    { "$ref": "#/$defs/CommitNode" },
+    { "$ref": "#/$defs/Edge" },
+    { "$ref": "#/$defs/ArtifactManifest" },
+    { "$ref": "#/$defs/FileArtifact" },
+    { "$ref": "#/$defs/GraphArtifact" },
+    { "$ref": "#/$defs/GitArtifact" }
+  ],
+  "$defs": {
+    "FunctionNode": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "repo_id": { "type": "string" },
+        "file_path": { "type": "string" },
+        "name": { "type": "string" },
+        "signature": { "type": "string" },
+        "calls": { "type": "array", "items": { "type": "string" } },
+        "commit_sha": { "type": "string" },
+        "kind": { "type": "string" },
+        "start_line": { "type": "integer" },
+        "end_line": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "FileNode": {
+      "type": "object",
+      "required": ["id", "path"],
+      "properties": {
+        "id": { "type": "string" },
+        "repo_id": { "type": "string" },
+        "path": { "type": "string" },
+        "language": { "type": "string" },
+        "package": { "type": "string" },
+        "imports": { "type": "array", "items": { "type": "string" } },
+        "commit_sha": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ModuleNode": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "repo_id": { "type": "string" },
+        "name": { "type": "string" },
+        "path": { "type": "string" },
+        "language": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ConceptNode": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "CommitNode": {
+      "type": "object",
+      "required": ["id", "sha"],
+      "properties": {
+        "id": { "type": "string" },
+        "repo_id": { "type": "string" },
+        "sha": { "type": "string" },
+        "message": { "type": "string" },
+        "author": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "Edge": {
+      "type": "object",
+      "required": ["id", "type", "from", "to"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "from_id": { "type": "string" },
+        "to_id": { "type": "string" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "first_seen": { "type": "string" },
+        "last_seen": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "ArtifactManifest": {
+      "type": "object",
+      "required": ["repo_id"],
+      "properties": {
+        "repo_id": { "type": "string" },
+        "root": { "type": "string" },
+        "commit_sha": { "type": "string" },
+        "languages": {
+          "type": "object",
+          "additionalProperties": { "type": "integer" }
+        },
+        "file_count": { "type": "integer" },
+        "scanned_at": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "Symbol": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "type": "string" },
+        "signature": { "type": "string" },
+        "start_line": { "type": "integer" },
+        "end_line": { "type": "integer" },
+        "calls": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "FileArtifact": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string" },
+        "language": { "type": "string" },
+        "package": { "type": "string" },
+        "imports": { "type": "array", "items": { "type": "string" } },
+        "symbols": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Symbol" }
+        },
+        "comments": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "GraphNode": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "label": { "type": "string" },
+        "props": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "GraphArtifact": {
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GraphNode" }
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Edge" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "GitArtifact": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string" },
+              "commits": { "type": "integer" },
+              "authors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "email": { "type": "string" },
+                    "commits": { "type": "integer" }
+                  }
+                }
+              },
+              "churn": { "type": "number" }
+            }
+          }
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sha"],
+            "properties": {
+              "sha": { "type": "string" },
+              "message": { "type": "string" },
+              "author": { "type": "string" },
+              "date": { "type": "string" }
+            }
+          }
+        },
+        "ownership": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "owner"],
+            "properties": {
+              "path": { "type": "string" },
+              "owner": { "type": "string" },
+              "confidence": { "type": "number" }
+            }
+          }
+        },
+        "renames": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "sha": { "type": "string" }
+            }
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

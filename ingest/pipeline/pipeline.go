@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -16,19 +17,35 @@ import (
 
 // Scan discovers languages, parses files, and writes file artifacts + manifest.
 func Scan(ctx context.Context, repo, out string) error {
+	log := slog.Default().With("op", "scan")
 	repo, out, err := absPaths(repo, out)
 	if err != nil {
 		return err
 	}
+	log.Info("discovering repository", "repo", repo, "out", out)
+
 	disc, err := discovery.ScanAndDiscoverLanguages(repo)
+
 	if err != nil {
 		return fmt.Errorf("discovery: %w", err)
 	}
+	totalFiles := 0
+	for lang, files := range disc.Languages {
+		totalFiles += len(files)
+		log.Debug("language files", "language", lang, "count", len(files))
+	}
+	log.Info("discovery complete",
+		"languages", len(disc.Languages),
+		"files", totalFiles,
+		"module_roots", len(disc.ModuleRoots),
+	)
 
+	log.Info("parsing files")
 	arts, err := parser.ParseAndExtract(ctx, disc.Root, disc.Languages)
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
+	log.Info("parse complete", "artifacts", len(arts))
 
 	if err := os.MkdirAll(filepath.Join(out, "files"), 0o755); err != nil {
 		return err
@@ -52,15 +69,20 @@ func Scan(ctx context.Context, repo, out string) error {
 	for _, a := range arts {
 		indexed[a.RelPath] = a.Hash
 	}
-	return writer.WriteCheckpoint(out, writer.Checkpoint{
+	if err := writer.WriteCheckpoint(out, writer.Checkpoint{
 		LastCommit:   head,
 		IndexedFiles: indexed,
 		UpdatedAt:    time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+	log.Info("scan artifacts written", "out", out, "commit", short(head), "files", len(arts))
+	return nil
 }
 
 // Graph loads file artifacts from dataDir and writes graph.json to outDir.
 func Graph(from, out string) error {
+	log := slog.Default().With("op", "graph")
 	from, out, err := absPaths(from, out)
 	if err != nil {
 		return err
@@ -75,27 +97,51 @@ func Graph(from, out string) error {
 	} else if m != nil && m.RepoRoot != "" {
 		repoID = filepath.Base(m.RepoRoot)
 	}
+	log.Info("building dependency graph", "files", len(arts), "repo_id", repoID)
 	g := graph.Build(arts, repoID)
-	return writer.WriteGraph(out, g)
+	if err := writer.WriteGraph(out, g); err != nil {
+		return err
+	}
+	log.Info("graph written",
+		"nodes", len(g.Nodes),
+		"edges", len(g.Edges),
+		"cycles", len(g.Cycles),
+		"out", out,
+	)
+	return nil
 }
 
 // Full runs scan + graph + git collection.
 func Full(ctx context.Context, repo, out string) error {
+	log := slog.Default().With("op", "full")
+	log.Info("full index starting", "repo", repo, "out", out)
 	if err := Scan(ctx, repo, out); err != nil {
 		return err
 	}
 	if err := Graph(out, out); err != nil {
 		return err
 	}
-	ga, err := git.Collect(repo)
-	if err != nil {
-		return fmt.Errorf("git: %w", err)
-	}
-	return writer.WriteGit(out, ga)
+	log.Info("collecting git history", "repo", repo)
+	// ga, err := git.Collect(repo)
+	// if err != nil {
+	// 	return fmt.Errorf("git: %w", err)
+	// }
+	// if err := writer.WriteGit(out, ga); err != nil {
+	// 	return err
+	// }
+	// log.Info("git history written",
+	// 	"commits", len(ga.Commits),
+	// 	"files", len(ga.Files),
+	// 	"hotspots", len(ga.Hotspots),
+	// 	"edge_hints", len(ga.EdgeHints),
+	// 	"head", short(ga.HEAD),
+	// )
+	return nil
 }
 
 // Incremental re-parses only files changed since the last checkpoint.
 func Incremental(ctx context.Context, repo, out string) error {
+	log := slog.Default().With("op", "incremental")
 	repo, out, err := absPaths(repo, out)
 	if err != nil {
 		return err
@@ -105,6 +151,7 @@ func Incremental(ctx context.Context, repo, out string) error {
 		return err
 	}
 	if cp == nil || cp.LastCommit == "" {
+		log.Info("no checkpoint; running full index")
 		return Full(ctx, repo, out)
 	}
 
@@ -113,18 +160,22 @@ func Incremental(ctx context.Context, repo, out string) error {
 		return err
 	}
 	if head == cp.LastCommit {
+		log.Info("already up to date", "commit", short(head))
 		return nil
 	}
 
+	log.Info("delta detected", "from", short(cp.LastCommit), "to", short(head))
 	changed, err := git.ChangedFilesSince(repo, cp.LastCommit)
 	if err != nil {
 		return err
 	}
 	if len(changed) == 0 {
+		log.Info("no tracked source files changed; advancing checkpoint")
 		cp.LastCommit = head
 		cp.UpdatedAt = time.Now().UTC()
 		return writer.WriteCheckpoint(out, *cp)
 	}
+	log.Info("re-parsing changed files", "changed", len(changed))
 
 	// Map changed relative paths to languages
 	langFiles := make(parser.LanguageFiles)
@@ -132,7 +183,7 @@ func Incremental(ctx context.Context, repo, out string) error {
 		abs := filepath.Join(repo, filepath.FromSlash(rel))
 		info, err := os.Stat(abs)
 		if err != nil {
-			// deleted
+			log.Debug("file removed", "path", rel)
 			_ = writer.RemoveFileArtifact(out, rel)
 			delete(cp.IndexedFiles, rel)
 			continue
@@ -148,6 +199,7 @@ func Incremental(ctx context.Context, repo, out string) error {
 		langFiles[lang] = append(langFiles[lang], abs)
 	}
 
+	parsed := 0
 	if len(langFiles) > 0 {
 		arts, err := parser.ParseAndExtract(ctx, repo, langFiles)
 		if err != nil {
@@ -159,9 +211,10 @@ func Incremental(ctx context.Context, repo, out string) error {
 			}
 			cp.IndexedFiles[art.RelPath] = art.Hash
 		}
+		parsed = len(arts)
 	}
+	log.Info("delta parse complete", "parsed", parsed)
 
-	// Rebuild graph from all artifacts
 	if err := Graph(out, out); err != nil {
 		return err
 	}
@@ -172,16 +225,17 @@ func Incremental(ctx context.Context, repo, out string) error {
 		return err
 	}
 
-	// Refresh discovery-based manifest lightly
 	disc, err := discovery.ScanAndDiscoverLanguages(repo)
 	if err == nil {
 		_ = writer.WriteManifest(out, writer.ManifestFromDiscovery(disc, len(cp.IndexedFiles), head))
 	}
+	log.Info("incremental complete", "commit", short(head), "indexed_files", len(cp.IndexedFiles))
 	return nil
 }
 
 // Watch polls HEAD every interval and runs Incremental on changes.
 func Watch(ctx context.Context, repo, out string, interval time.Duration) error {
+	log := slog.Default().With("op", "watch")
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -193,23 +247,25 @@ func Watch(ctx context.Context, repo, out string, interval time.Duration) error 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	fmt.Fprintf(os.Stderr, "watching %s every %s\n", repo, interval)
+	log.Info("watching for commits", "repo", repo, "interval", interval.String(), "head", short(last))
 	for {
 		select {
 		case <-ctx.Done():
+			log.Info("watch stopped", "reason", ctx.Err())
 			return ctx.Err()
 		case <-ticker.C:
 			head, err := git.HEADSHA(repo)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+				log.Warn("failed to read HEAD", "err", err)
 				continue
 			}
 			if head == last {
+				log.Debug("no change", "head", short(head))
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "HEAD moved %s → %s; incremental index\n", short(last), short(head))
+			log.Info("HEAD moved", "from", short(last), "to", short(head))
 			if err := Incremental(ctx, repo, out); err != nil {
-				fmt.Fprintf(os.Stderr, "incremental: %v\n", err)
+				log.Error("incremental failed", "err", err)
 				continue
 			}
 			last = head

@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -o ncm .
+
+  python:
+    name: Python brain check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install brain requirements
+        run: pip install -r brain/requirements.txt
+      - name: Import and syntax check
+        env:
+          PYTHONPATH: .
+        run: |
+          python -c "import brain; import brain.loader; import brain.graph; import brain.concepts; import brain.embeddings; import brain.reasoning; import brain.explain; import brain.api.main; print('brain', brain.__version__)"
+          python -m compileall -q brain
+          python -c "from brain.embeddings.pipeline import embed_texts; assert len(embed_texts(['hello'])[0]) == 64"
+
+  e2e:
+    name: Index + query smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python deps
+        run: pip install -r brain/requirements.txt
+      - name: Full index self repo
+        run: go run . full --repo . --out ./data
+      - name: Ingest and query
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m brain.ingest --data ./data --memory --json
+          python - <<'PY'
+          from brain.api.main import _ingest_bundle, set_store
+          from brain.graph.store import InMemoryGraphStore
+          from brain.reasoning.engine import Reasoner
+          s = InMemoryGraphStore(); s.connect(); set_store(s)
+          r = _ingest_bundle("./data")
+          assert r["files"] > 0 and r["nodes_ingested"] > 0
+          ans = Reasoner(s, repo_id=r["repo_id"]).answer("Which files change most often?")
+          assert ans.answer
+          print("e2e ok", r["repo_id"], ans.answer[:120])
+          PY

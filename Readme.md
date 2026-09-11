@@ -1,95 +1,94 @@
-# NCM
+# Neural Codebase Memory (NCM)
 
-**Neural Codebase Memory** — a Go CLI for ingesting, storing, and querying codebase context (files, structure, dependencies, and git history) to power explainable architectural Q&A.
-
-## Current Status
-
-Early scaffolding. The `ncm-index` command validates a directory path and walks its contents.
-
-### What's implemented
-
-- **Go module** — `github.com/rantoinne/ncm` (Go 1.23.2)
-- **CLI entrypoint** — `main.go` delegates to `cmd/ncm-index`
-- **Index command** — `ncm-index` with a `-path` flag for directory traversal
-- **Directory walker** — recursively lists files and directories under a given root
-- **Project layout** — placeholder packages for the planned architecture (see below)
-- **Build** — `go build` at the repo root compiles to a local `ncm` binary (gitignored)
-
-### Usage
-
-```bash
-go build -o ncm .
-./ncm -path /path/to/project
-```
-
-Example output:
-
-```
-Path is a directory
-Directory: /path/to/project
-File: /path/to/project/main.go
-...
-```
-
-## Project Plan
-
-### Phase 1 — Foundation (in progress)
-
-- [x] Initialize Go module and CLI skeleton
-- [x] Add directory traversal with path validation
-- [x] Scaffold package layout (`cmd`, `ingest`, `store`, `schema`, `brain`, `migrations`, `docs`)
-- [x] Move CLI logic into `cmd/ncm-index`
-- [ ] Define core data models in `schema/`
-- [ ] Add structured logging and error handling
-
-### Phase 2 — Ingestion
-
-- [ ] Walk directories and extract file metadata (path, size, type, timestamps)
-- [ ] Parse supported file types (Go, Python, TypeScript via tree-sitter)
-- [ ] Build dependency graph (imports, calls, module boundaries)
-- [ ] Add git history module (churn, ownership, renames)
-
-### Phase 3 — Storage
-
-- [ ] Choose and integrate a persistence layer (graph DB + shared artifacts)
-- [ ] Write migrations in `migrations/`
-- [ ] Implement CRUD operations in `store/`
-- [ ] Index content for full-text and vector search
-
-### Phase 4 — Brain (Query & Retrieval)
-
-- [ ] Concept tagging and embedding clusters
-- [ ] Knowledge graph traversal and evidence bundles
-- [ ] Expose query API via CLI subcommands (`search`, `ask`, etc.)
-- [ ] Python reasoning layer + FastAPI for explainable Q&A
-
-### Phase 5 — Polish
-
-- [ ] Configuration file support (`.ncm.yaml`)
-- [ ] Incremental indexing with checkpoint/resume
-- [ ] Documentation and examples in `docs/`
-- [ ] E2E tests and CI
+Hybrid Go + Python system that indexes a repository into a knowledge graph and answers architectural questions with evidence.
 
 ## Architecture
 
+- **Go (`ingest/`, `cmd/ncm-index`)** — discovery, tree-sitter parsing (Go/Python/TS/JS), dependency graph, git history, incremental indexing
+- **Python (`brain/`)** — artifact loader, Neo4j/in-memory graph, concept tagging, reasoning, FastAPI
+- **Shared** — JSON artifacts under `data/` (+ Protobuf schemas in `schema/`)
+
+See **[docs/architecture.md](docs/architecture.md)** for diagrams of the stack (tree-sitter, Neo4j, Qdrant, FastAPI, …) and why each piece exists.
+
+### Logging
+
+```bash
+NCM_LOG_LEVEL=debug ./ncm full --repo /path/to/repo --out ./data --verbose
+NCM_LOG_LEVEL=debug PYTHONPATH=. python -m brain.ingest --data ./data --memory --verbose
+# optional: NCM_LOG_FORMAT=json
+```
+
+## Quick start
+
+```bash
+# 1. Index a repo (Go)
+go build -o ncm .
+./ncm full --repo /path/to/repo --out ./data
+
+# 2. Load into the brain (Python)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r brain/requirements.txt
+PYTHONPATH=. python -m brain.ingest --data ./data --memory
+
+# 3. Serve the API
+PYTHONPATH=. uvicorn brain.api.main:app --reload --port 8000
+
+# 4. Ask questions
+curl -s localhost:8000/health
+curl -s -X POST localhost:8000/v1/query \
+  -H 'content-type: application/json' \
+  -d '{"q":"Where does persistence live?"}'
+```
+
+Optional graph DB / vectors:
+
+```bash
+docker compose up -d   # Neo4j + Qdrant
+# unset --memory / set NEO4J_URI=bolt://localhost:7687 NEO4J_USER=neo4j NEO4J_PASSWORD=ncmpassword
+```
+
+## CLI
+
+```
+./ncm scan --repo PATH --out DIR          # discover + parse → file artifacts
+./ncm graph --from DIR --out DIR          # build dependency graph.json
+./ncm full --repo PATH --out DIR          # scan + graph + git
+./ncm incremental --repo PATH --out DIR   # delta re-index from checkpoint
+./ncm watch --repo PATH --out DIR         # poll HEAD and incremental-index
+```
+
+## API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Liveness |
+| POST | `/v1/query` | Natural-language Q&A with evidence |
+| GET | `/v1/graph/path?from=&to=` | Shortest path |
+| POST | `/v1/index` | Ingest `data/` artifacts + concept tags |
+| GET | `/v1/repo/{id}/map` | Repository map |
+
+## Layout
+
 ```
 ncm/
-├── main.go                  # Thin entrypoint; calls ncmindex.Run()
-├── cmd/
-│   └── ncm-index/           # Index CLI: full + incremental index
-│       └── ncm-index.go
-├── ingest/                  # Discovery, AST parsing, deps, git
-├── store/                   # Persistence and indexing
-├── schema/                  # Protobuf/JSON schemas shared by Go + Python
-├── brain/                   # Semantics, reasoning, API (Python)
-├── migrations/              # DB/graph schema migrations
-└── docs/                    # User and developer documentation
+├── cmd/ncm-index/       # Go CLI
+├── ingest/              # discovery, parser, graph, git, pipeline
+├── store/writer/        # artifact writer + checkpoint
+├── brain/               # Python loader, graph, concepts, reasoning, API
+├── schema/              # entities.proto, events.proto, entities.json
+├── docker-compose.yml
+└── .github/workflows/ci.yml
 ```
 
-## Recent Updates
+## Phase 1 status
 
-| Date       | Change |
-|------------|--------|
-| 2026-07-09 | Initial commit — Go module, basic `-path` flag, directory walker |
-| 2026-07-10 | Extended walker to print both files and directories; added `.gitignore` for binary |
-| 2026-07-10 | Moved CLI logic to `cmd/ncm-index/ncm-index.go`; root `main.go` now delegates to `ncmindex.Run()` |
+Implemented end-to-end MVP covering the Phase 1 plan milestones:
+
+- [x] Monorepo bootstrap (schemas, docker-compose, CI)
+- [x] Go discovery + multi-language AST → JSON artifacts
+- [x] Dependency graph (imports/calls/packages)
+- [x] Git history (churn, ownership, INTRODUCED_IN / MODIFIED_BY / OWNS)
+- [x] Python graph store (Neo4j + in-memory) with path/neighbor/blast queries
+- [x] Rule + import concept tagger → `TAGGED_AS`
+- [x] Reasoning layer + FastAPI (template synthesis; optional LLM if `OPENAI_API_KEY`)
+- [x] Incremental index + checkpoint/watch
