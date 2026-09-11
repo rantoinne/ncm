@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package ncm.schema;
+
+option go_package = "github.com/rantoinne/ncm/schema;schema";
+
+// Trigger a full repository index.
+message IndexRepo {
+  string repo_id = 1;
+  string root = 2;
+  string output_dir = 3;
+  bool force_full = 4;
+  repeated string languages = 5;
+}
+
+// Trigger an incremental index for a single commit.
+message IndexCommit {
+  string repo_id = 1;
+  string root = 2;
+  string commit_sha = 3;
+  string parent_sha = 4;
+  string output_dir = 5;
+  repeated string changed_paths = 6;
+}

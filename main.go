@@ -16,8 +16,8 @@ func main() {
 	}
 	defer logfile.Close()
 
-	os.Stdout = logfile
-	os.Stderr = logfile
+	// os.Stdout = logfile
+	// os.Stderr = logfile
 
 	logging.Setup(logging.Options{})
 	args := os.Args[1:]

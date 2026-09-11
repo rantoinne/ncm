@@ -1,2 +1,12 @@
 ncm
+data/
+*.exe
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
 .plans/
+*.egg-info/
+app.log
+out/
