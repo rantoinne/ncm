@@ -37,14 +37,25 @@ var IgnoreFiles = map[string]bool{
 
 // ExtToLanguage maps file extensions to language identifiers.
 var ExtToLanguage = map[string]string{
-	".go":  "go",
-	".py":  "python",
-	".ts":  "typescript",
-	".tsx": "tsx",
-	".js":  "javascript",
-	".jsx": "javascript",
-	".mjs": "javascript",
-	".cjs": "javascript",
+	".go":   "go",
+	".py":   "python",
+	".ts":   "typescript",
+	".tsx":  "tsx",
+	".js":   "javascript",
+	".jsx":  "javascript",
+	".mjs":  "javascript",
+	".cjs":  "javascript",
+	".rs":   "rust",
+	".java": "java",
+	".kt":   "kotlin",
+	".kts":  "kotlin",
+	".cs":   "csharp",
+	".cpp":  "cpp",
+	".cc":   "cpp",
+	".cxx":  "cpp",
+	".c":    "c",
+	".h":    "c",
+	".hpp":  "cpp",
 }
 
 // ModuleMarkers are filenames that indicate a module/package root.
@@ -53,6 +64,10 @@ var ModuleMarkers = map[string]bool{
 	"package.json":     true,
 	"pyproject.toml":   true,
 	"requirements.txt": true,
+	"Cargo.toml":       true,
+	"pom.xml":          true,
+	"build.gradle":     true,
+	"build.gradle.kts": true,
 }
 
 // DiscoveryResult holds languages, module roots, and scan stats for a repo.
@@ -77,6 +92,7 @@ func ScanAndDiscoverLanguages(root string) (*DiscoveryResult, error) {
 		Stats:     make(map[string]int),
 	}
 
+	// JS: new Set equivalent in GO
 	moduleSet := make(map[string]struct{})
 
 	err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErr error) error {
@@ -98,14 +114,14 @@ func ScanAndDiscoverLanguages(root string) (*DiscoveryResult, error) {
 		}
 
 		if ModuleMarkers[name] {
+			// Gets the folder where file exists (. for root)
 			dir := filepath.Dir(path)
+			// Gets the relative path from the root (Ex: a/b/c/pkg.json -> a/b/c)
 			rel, relErr := filepath.Rel(absRoot, dir)
 			if relErr != nil {
 				rel = dir
 			}
-			if rel == "." {
-				rel = "."
-			}
+
 			moduleSet[filepath.ToSlash(rel)] = struct{}{}
 		}
 
@@ -118,8 +134,10 @@ func ScanAndDiscoverLanguages(root string) (*DiscoveryResult, error) {
 		result.Languages[lang] = append(result.Languages[lang], path)
 		result.Stats[lang]++
 		result.Stats["files"]++
+
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}

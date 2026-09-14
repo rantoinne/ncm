@@ -29,11 +29,9 @@ func Scan(ctx context.Context, repo, out string) error {
 	if err != nil {
 		return fmt.Errorf("discovery: %w", err)
 	}
-	totalFiles := 0
-	for lang, files := range disc.Languages {
-		totalFiles += len(files)
-		log.Debug("language files", "language", lang, "count", len(files))
-	}
+
+	totalFiles := disc.Stats["files"]
+
 	log.Info("discovery complete",
 		"languages", len(disc.Languages),
 		"files", totalFiles,
@@ -41,11 +39,15 @@ func Scan(ctx context.Context, repo, out string) error {
 	)
 
 	log.Info("parsing files")
+
 	arts, err := parser.ParseAndExtract(ctx, disc.Root, disc.Languages)
+
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
-	log.Info("parse complete", "artifacts", len(arts))
+	repoID := filepath.Base(disc.Root)
+	head, _ := git.HEADSHA(repo)
+	parser.StampStableIDs(arts, repoID, head)
 
 	if err := os.MkdirAll(filepath.Join(out, "files"), 0o755); err != nil {
 		return err
@@ -60,7 +62,6 @@ func Scan(ctx context.Context, repo, out string) error {
 	if err := writer.WriteFileArtifacts(out, arts); err != nil {
 		return err
 	}
-	head, _ := git.HEADSHA(repo)
 	if err := writer.WriteManifest(out, writer.ManifestFromDiscovery(disc, len(arts), head)); err != nil {
 		return err
 	}
@@ -122,20 +123,20 @@ func Full(ctx context.Context, repo, out string) error {
 		return err
 	}
 	log.Info("collecting git history", "repo", repo)
-	// ga, err := git.Collect(repo)
-	// if err != nil {
-	// 	return fmt.Errorf("git: %w", err)
-	// }
-	// if err := writer.WriteGit(out, ga); err != nil {
-	// 	return err
-	// }
-	// log.Info("git history written",
-	// 	"commits", len(ga.Commits),
-	// 	"files", len(ga.Files),
-	// 	"hotspots", len(ga.Hotspots),
-	// 	"edge_hints", len(ga.EdgeHints),
-	// 	"head", short(ga.HEAD),
-	// )
+	ga, err := git.Collect(repo)
+	if err != nil {
+		return fmt.Errorf("git: %w", err)
+	}
+	if err := writer.WriteGit(out, ga); err != nil {
+		return err
+	}
+	log.Info("git history written",
+		"commits", len(ga.Commits),
+		"files", len(ga.Files),
+		"hotspots", len(ga.Hotspots),
+		"edge_hints", len(ga.EdgeHints),
+		"head", short(ga.HEAD),
+	)
 	return nil
 }
 
@@ -205,6 +206,7 @@ func Incremental(ctx context.Context, repo, out string) error {
 		if err != nil {
 			return err
 		}
+		parser.StampStableIDs(arts, filepath.Base(repo), head)
 		for _, art := range arts {
 			if err := writer.WriteFileArtifact(out, art); err != nil {
 				return err
@@ -216,6 +218,13 @@ func Incremental(ctx context.Context, repo, out string) error {
 	log.Info("delta parse complete", "parsed", parsed)
 
 	if err := Graph(out, out); err != nil {
+		return err
+	}
+
+	log.Info("refreshing git history", "repo", repo)
+	if ga, gerr := git.Collect(repo); gerr != nil {
+		log.Warn("git refresh failed", "err", gerr)
+	} else if err := writer.WriteGit(out, ga); err != nil {
 		return err
 	}
 

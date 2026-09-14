@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
+// TODO: Export to types.go
 // LanguageFiles maps language id → absolute file paths.
 type LanguageFiles map[string][]string
 
@@ -26,26 +28,32 @@ type ParseResult struct {
 
 // ParseAll fans out work per language with a bounded worker pool per language,
 // reusing one parser instance per worker goroutine with the correct language set.
+// VERY EXPENSIVE TO RUN
 func ParseAll(ctx context.Context, langFiles LanguageFiles) <-chan ParseResult {
 	out := make(chan ParseResult)
+
 	var wg sync.WaitGroup
-	numWorkers := runtime.NumCPU()
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
+	numWorkers := max(runtime.NumCPU(), 1)
 
 	for lang, files := range langFiles {
-		files := files
-		lang := lang
 		langObj := GetLanguage(lang)
 		wg.Add(1)
+
 		go func() {
-			defer wg.Done()
+			fmt.Printf("Starting parsing for language: %s with %d files\n", lang, len(files))
+			defer func() {
+				fmt.Printf("Finished parsing for language: %s\n", lang)
+				wg.Done()
+			}()
+			// TODO: Can be optimised and not loop
 			if langObj == nil {
+				fmt.Printf("Unsupported language encountered: %s\n", lang)
 				for _, path := range files {
+					fmt.Printf("Emitting error for file %s (unsupported language: %s)\n", path, lang)
 					select {
 					case out <- ParseResult{Path: path, Lang: lang, Err: ErrUnsupportedLanguage(lang)}:
 					case <-ctx.Done():
+						fmt.Printf("Context cancelled while emitting unsupported language error for %s\n", path)
 						return
 					}
 				}
@@ -58,14 +66,22 @@ func ParseAll(ctx context.Context, langFiles LanguageFiles) <-chan ParseResult {
 			for i := 0; i < numWorkers; i++ {
 				langWg.Add(1)
 				go func() {
-					defer langWg.Done()
+					defer func() {
+						fmt.Printf("Worker %d for language %s done\n", i, lang)
+						langWg.Done()
+					}()
+
+					fmt.Printf("Worker %d for language %s starting\n", i, lang)
 					p := sitter.NewParser()
 					p.SetLanguage(langObj)
 					defer p.Close()
 
 					for path := range workerCh {
+						fmt.Printf("Worker %d for language %s parsing file: %s\n", i, lang, path)
+
 						select {
 						case <-ctx.Done():
+							fmt.Printf("Worker %d for lang %s: ctx cancelled while waiting on file: %s\n", i, lang, path)
 							return
 						default:
 						}
@@ -82,30 +98,41 @@ func ParseAll(ctx context.Context, langFiles LanguageFiles) <-chan ParseResult {
 							Tree:    tree,
 							Err:     err,
 						}:
+							fmt.Printf("Worker %d for lang %s emitted result for file: %s\n", i, lang, path)
 						case <-ctx.Done():
+							fmt.Printf("Worker %d for lang %s: ctx cancelled while emitting result for file: %s\n", i, lang, path)
 							return
 						}
 					}
 				}()
 			}
 
+			// Feeder goroutine to feed the worker channel with files
 			go func() {
-				defer close(workerCh)
+				fmt.Printf("Feeder for language %s starting\n", lang)
+				defer func() {
+					fmt.Printf("Feeder for language %s finished, closing worker channel\n", lang)
+					close(workerCh)
+				}()
 				for _, path := range files {
 					select {
 					case workerCh <- path:
+						fmt.Printf("Feeder for language %s sent file: %s to workerCh\n", lang, path)
 					case <-ctx.Done():
+						fmt.Printf("Feeder for language %s: ctx cancelled, stopping\n", lang)
 						return
 					}
 				}
 			}()
 
 			langWg.Wait()
+			fmt.Printf("All workers for language %s completed\n", lang)
 		}()
 	}
 
 	go func() {
 		wg.Wait()
+		fmt.Println("Waiting for all workers to finish")
 		close(out)
 	}()
 
@@ -122,7 +149,7 @@ func ParseAndExtract(ctx context.Context, root string, langFiles LanguageFiles) 
 		mu   sync.Mutex
 		arts []FileArtifact
 	)
-	for res := range ParseAll(ctx, langFiles) {
+	for res := range ParseAllV2(ctx, langFiles) {
 		if res.Err != nil {
 			continue
 		}

@@ -45,7 +45,7 @@ type Hotspot struct {
 
 // EdgeHint is relationship data derived from git (pipeline may materialize as graph edges).
 type EdgeHint struct {
-	Type       string   `json:"type"` // INTRODUCED_IN, MODIFIED_BY, RENAMED_TO, OWNS
+	Type       string   `json:"type"` // INTRODUCED_IN, MODIFIED_BY, RENAMED_TO, OWNS, REMOVED_IN
 	From       string   `json:"from"`
 	To         string   `json:"to"`
 	Confidence float64  `json:"confidence"`
@@ -98,8 +98,13 @@ func Collect(repoRoot string) (*GitArtifact, error) {
 		return nil, err
 	}
 
+	removed, err := collectRemoved(abs)
+	if err != nil {
+		return nil, err
+	}
+
 	hotspots := buildHotspots(files, 20)
-	hints := buildEdgeHints(files, renames, introduced)
+	hints := buildEdgeHints(files, renames, introduced, removed)
 
 	return &GitArtifact{
 		RepoRoot:  abs,
@@ -347,7 +352,33 @@ func collectIntroduced(dir string) (map[string]string, error) {
 	return introduced, scanner.Err()
 }
 
-func buildEdgeHints(files map[string]FileStats, renames []Rename, introduced map[string]string) []EdgeHint {
+func collectRemoved(dir string) (map[string]string, error) {
+	// Newest-first: last commit that deleted each path.
+	out, err := gitOutput(dir, "log", "--diff-filter=D", "--pretty=format:COMMIT %H", "--name-only", "--no-merges")
+	if err != nil {
+		return nil, err
+	}
+	removed := make(map[string]string)
+	var curSHA string
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "COMMIT ") {
+			curSHA = strings.TrimPrefix(line, "COMMIT ")
+			continue
+		}
+		path := filepath.ToSlash(line)
+		if _, ok := removed[path]; !ok && curSHA != "" {
+			removed[path] = curSHA
+		}
+	}
+	return removed, scanner.Err()
+}
+
+func buildEdgeHints(files map[string]FileStats, renames []Rename, introduced, removed map[string]string) []EdgeHint {
 	var hints []EdgeHint
 	for path, st := range files {
 		if st.Owner != "" {
@@ -376,6 +407,15 @@ func buildEdgeHints(files map[string]FileStats, renames []Rename, introduced map
 			To:         sha,
 			Confidence: 0.9,
 			Evidence:   []string{"git log --diff-filter=A"},
+		})
+	}
+	for path, sha := range removed {
+		hints = append(hints, EdgeHint{
+			Type:       "REMOVED_IN",
+			From:       path,
+			To:         sha,
+			Confidence: 0.9,
+			Evidence:   []string{"git log --diff-filter=D"},
 		})
 	}
 	for _, r := range renames {

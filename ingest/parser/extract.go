@@ -34,6 +34,30 @@ func symbolID(relPath, name string) string {
 	return fmt.Sprintf("%s#%s", filepath.ToSlash(relPath), name)
 }
 
+// StableSymbolID builds {repo}:{commit}:{path}#{name} when repo/commit known.
+func StableSymbolID(repoID, commit, relPath, name string) string {
+	rel := filepath.ToSlash(relPath)
+	if repoID == "" || commit == "" {
+		return symbolID(rel, name)
+	}
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	return fmt.Sprintf("%s:%s:%s#%s", repoID, commit, rel, name)
+}
+
+// StampStableIDs rewrites symbol IDs on artifacts using repo + commit.
+func StampStableIDs(arts []FileArtifact, repoID, commit string) {
+	for i := range arts {
+		arts[i].RepoID = repoID
+		arts[i].CommitSHA = commit
+		for j := range arts[i].Symbols {
+			name := arts[i].Symbols[j].Name
+			arts[i].Symbols[j].ID = StableSymbolID(repoID, commit, arts[i].RelPath, name)
+		}
+	}
+}
+
 func nodeText(n *sitter.Node, content []byte) string {
 	if n == nil {
 		return ""
@@ -311,13 +335,16 @@ func extractPython(art *FileArtifact, root *sitter.Node, content []byte) {
 				return true
 			}
 			name := nodeText(nameNode, content)
+			bases := pythonBases(n, content)
 			art.Symbols = append(art.Symbols, Symbol{
-				ID:        symbolID(art.RelPath, name),
-				Name:      name,
-				Kind:      "class",
-				Signature: truncateSig(firstLine(nodeText(n, content))),
-				StartLine: n.StartPoint().Row + 1,
-				EndLine:   n.EndPoint().Row + 1,
+				ID:         symbolID(art.RelPath, name),
+				Name:       name,
+				Kind:       "class",
+				Signature:  truncateSig(firstLine(nodeText(n, content))),
+				StartLine:  n.StartPoint().Row + 1,
+				EndLine:    n.EndPoint().Row + 1,
+				Extends:    bases,
+				Implements: nil,
 			})
 		}
 		return true
@@ -398,13 +425,16 @@ func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 				return true
 			}
 			name := nodeText(nameNode, content)
+			ext, impl := tsHeritage(n, content)
 			art.Symbols = append(art.Symbols, Symbol{
-				ID:        symbolID(art.RelPath, name),
-				Name:      name,
-				Kind:      "class",
-				Signature: truncateSig(firstLine(nodeText(n, content))),
-				StartLine: n.StartPoint().Row + 1,
-				EndLine:   n.EndPoint().Row + 1,
+				ID:         symbolID(art.RelPath, name),
+				Name:       name,
+				Kind:       "class",
+				Signature:  truncateSig(firstLine(nodeText(n, content))),
+				StartLine:  n.StartPoint().Row + 1,
+				EndLine:    n.EndPoint().Row + 1,
+				Extends:    ext,
+				Implements: impl,
 			})
 		case "interface_declaration":
 			nameNode := childByField(n, "name")
@@ -412,6 +442,7 @@ func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 				return true
 			}
 			name := nodeText(nameNode, content)
+			ext, _ := tsHeritage(n, content)
 			art.Symbols = append(art.Symbols, Symbol{
 				ID:        symbolID(art.RelPath, name),
 				Name:      name,
@@ -419,6 +450,7 @@ func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 				Signature: truncateSig(firstLine(nodeText(n, content))),
 				StartLine: n.StartPoint().Row + 1,
 				EndLine:   n.EndPoint().Row + 1,
+				Extends:   ext,
 			})
 		case "type_alias_declaration":
 			nameNode := childByField(n, "name")
@@ -439,6 +471,57 @@ func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 		}
 		return true
 	})
+}
+
+func pythonBases(classNode *sitter.Node, content []byte) []string {
+	var bases []string
+	argList := childByField(classNode, "superclasses")
+	if argList == nil {
+		// Some grammars use argument_list as named child
+		for i := 0; i < int(classNode.NamedChildCount()); i++ {
+			ch := classNode.NamedChild(i)
+			if ch.Type() == "argument_list" {
+				argList = ch
+				break
+			}
+		}
+	}
+	if argList == nil {
+		return bases
+	}
+	walk(argList, func(c *sitter.Node) bool {
+		if c.Type() == "identifier" || c.Type() == "attribute" {
+			bases = append(bases, nodeText(c, content))
+			return false
+		}
+		return true
+	})
+	return bases
+}
+
+func tsHeritage(classNode *sitter.Node, content []byte) (extends, implements []string) {
+	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+		c := classNode.NamedChild(i)
+		switch c.Type() {
+		case "class_heritage", "extends_clause", "heritage_clause":
+			walk(c, func(t *sitter.Node) bool {
+				if t.Type() == "type_identifier" || t.Type() == "identifier" {
+					extends = append(extends, nodeText(t, content))
+					return false
+				}
+				return true
+			})
+		case "implements_clause":
+			walk(c, func(t *sitter.Node) bool {
+				if t.Type() == "type_identifier" || t.Type() == "identifier" {
+					implements = append(implements, nodeText(t, content))
+					return false
+				}
+				return true
+			})
+		}
+	}
+	return extends, implements
 }
 
 func extractTSImport(art *FileArtifact, n *sitter.Node, content []byte) {

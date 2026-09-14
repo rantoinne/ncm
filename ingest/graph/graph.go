@@ -40,6 +40,12 @@ type pendingCall struct {
 	name   string
 }
 
+type pendingRel struct {
+	fromID   string
+	name     string
+	edgeType string
+}
+
 // Build constructs a dependency graph from file artifacts.
 func Build(files []parser.FileArtifact, repoID string) Graph {
 	b := newBuilder(repoID)
@@ -47,19 +53,22 @@ func Build(files []parser.FileArtifact, repoID string) Graph {
 		b.addFile(f)
 	}
 	b.resolveCalls()
+	b.resolveHeritage()
+	b.addTestEdges()
 	b.addPackageDeps()
 	b.detectCycles()
 	return b.export()
 }
 
 type builder struct {
-	repoID  string
-	nodes   map[string]Node
-	edges   map[string]Edge
-	byName  map[string][]string
-	pkgDeps map[string]map[string]struct{}
-	pending []pendingCall
-	cycles  [][]string
+	repoID     string
+	nodes      map[string]Node
+	edges      map[string]Edge
+	byName     map[string][]string
+	pkgDeps    map[string]map[string]struct{}
+	pending    []pendingCall
+	pendingExt []pendingRel
+	cycles     [][]string
 }
 
 func newBuilder(repoID string) *builder {
@@ -197,6 +206,13 @@ func (b *builder) addFile(f parser.FileArtifact) {
 		for _, call := range sym.Calls {
 			b.pending = append(b.pending, pendingCall{fromID: sym.ID, name: call})
 		}
+
+		for _, base := range sym.Extends {
+			b.pendingExt = append(b.pendingExt, pendingRel{fromID: sym.ID, name: base, edgeType: "EXTENDS"})
+		}
+		for _, iface := range sym.Implements {
+			b.pendingExt = append(b.pendingExt, pendingRel{fromID: sym.ID, name: iface, edgeType: "IMPLEMENTS"})
+		}
 	}
 }
 
@@ -259,6 +275,105 @@ func (b *builder) resolveCalls() {
 			})
 		}
 	}
+}
+
+func (b *builder) resolveHeritage() {
+	for _, pr := range b.pendingExt {
+		targets := b.byName[pr.name]
+		if len(targets) == 0 {
+			if i := strings.LastIndex(pr.name, "."); i >= 0 {
+				targets = b.byName[pr.name[i+1:]]
+			}
+		}
+		if len(targets) == 0 {
+			extID := "type:" + pr.name
+			b.addNode(Node{
+				ID:    extID,
+				Type:  "Type",
+				Label: pr.name,
+				Props: map[string]any{"external": true},
+			})
+			b.addEdge(Edge{
+				Type:       pr.edgeType,
+				From:       pr.fromID,
+				To:         extID,
+				Confidence: 0.5,
+				Evidence:   []string{fmt.Sprintf("%s %s", pr.edgeType, pr.name)},
+			})
+			continue
+		}
+		conf := 0.85
+		if len(targets) > 1 {
+			conf = 0.5
+		}
+		b.addEdge(Edge{
+			Type:       pr.edgeType,
+			From:       pr.fromID,
+			To:         targets[0],
+			Confidence: conf,
+			Evidence:   []string{fmt.Sprintf("%s %s", pr.edgeType, pr.name)},
+		})
+	}
+}
+
+func (b *builder) addTestEdges() {
+	for id, n := range b.nodes {
+		if n.Type != "File" {
+			continue
+		}
+		if !isTestFile(id) {
+			continue
+		}
+		target := testTargetPath(id)
+		if target == "" {
+			continue
+		}
+		if _, ok := b.nodes[target]; !ok {
+			continue
+		}
+		b.addEdge(Edge{
+			Type:       "TESTS",
+			From:       id,
+			To:         target,
+			Confidence: 0.75,
+			Evidence:   []string{"test file naming convention"},
+		})
+	}
+}
+
+func isTestFile(rel string) bool {
+	base := path.Base(rel)
+	if strings.HasSuffix(base, "_test.go") {
+		return true
+	}
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	if strings.HasSuffix(base, "_test.py") {
+		return true
+	}
+	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") {
+		return true
+	}
+	return false
+}
+
+func testTargetPath(testPath string) string {
+	base := path.Base(testPath)
+	dir := path.Dir(testPath)
+	switch {
+	case strings.HasSuffix(base, "_test.go"):
+		return path.Join(dir, strings.TrimSuffix(base, "_test.go")+".go")
+	case strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py"):
+		return path.Join(dir, strings.TrimPrefix(base, "test_"))
+	case strings.HasSuffix(base, "_test.py"):
+		return path.Join(dir, strings.TrimSuffix(base, "_test.py")+".py")
+	case strings.Contains(base, ".test."):
+		return path.Join(dir, strings.Replace(base, ".test.", ".", 1))
+	case strings.Contains(base, ".spec."):
+		return path.Join(dir, strings.Replace(base, ".spec.", ".", 1))
+	}
+	return ""
 }
 
 func (b *builder) addPackageDeps() {
