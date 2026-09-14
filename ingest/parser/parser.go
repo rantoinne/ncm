@@ -149,7 +149,7 @@ func ParseAndExtract(ctx context.Context, root string, langFiles LanguageFiles) 
 		mu   sync.Mutex
 		arts []FileArtifact
 	)
-	for res := range ParseAllV2(ctx, langFiles) {
+	for res := range ParseAll(ctx, langFiles) {
 		if res.Err != nil {
 			continue
 		}
