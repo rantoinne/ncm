@@ -9,7 +9,7 @@ import (
 )
 
 // Extract builds a FileArtifact from a parsed tree and source content.
-func Extract(path, relPath, lang string, tree *sitter.Tree, content []byte) FileArtifact {
+func Extract(path string, relPath string, lang string, tree *sitter.Tree, content []byte) FileArtifact {
 	art := FileArtifact{
 		Path:     path,
 		RelPath:  filepath.ToSlash(relPath),
@@ -377,10 +377,10 @@ func extractPythonImport(art *FileArtifact, n *sitter.Node, content []byte) {
 
 func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 	art.Comments = collectComments(root, content, map[string]bool{
-		"comment":        true,
-		"line_comment":   true,
-		"block_comment":  true,
-		"html_comment":   true,
+		"comment":       true,
+		"line_comment":  true,
+		"block_comment": true,
+		"html_comment":  true,
 	})
 
 	walk(root, func(n *sitter.Node) bool {
