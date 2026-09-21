@@ -19,6 +19,8 @@ class Symbol(BaseModel):
     start_line: int = 0
     end_line: int = 0
     calls: list[str] = Field(default_factory=list)
+    extends: list[str] = Field(default_factory=list)
+    implements: list[str] = Field(default_factory=list)
 
 
 class FileArtifact(BaseModel):

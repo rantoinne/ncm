@@ -46,7 +46,15 @@ func Scan(ctx context.Context, repo, out string) error {
 		return fmt.Errorf("parse: %w", err)
 	}
 	repoID := filepath.Base(disc.Root)
-	head, _ := git.HEADSHA(repo)
+
+	head, err := git.HEADSHA(repo)
+
+	if err != nil {
+		// Remove if parsing a non-git repository
+		// return fmt.Errorf("git head err: %w", err)
+		fmt.Printf("git head err: %s\n", err)
+	}
+
 	parser.StampStableIDs(arts, repoID, head)
 
 	if err := os.MkdirAll(filepath.Join(out, "files"), 0o755); err != nil {

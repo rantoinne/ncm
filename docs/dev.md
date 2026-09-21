@@ -34,7 +34,17 @@ docker compose up -d
 export NEO4J_URI=bolt://localhost:7687
 export NEO4J_USER=neo4j
 export NEO4J_PASSWORD=ncmpassword
+# optional vectors: QDRANT_URL=http://localhost:6333
+# optional: NCM_EMBED_BACKEND=sentence-transformers
 PYTHONPATH=. python -m brain.ingest --data ./data
+```
+
+## Index via API (triggers Go)
+
+```bash
+curl -s -X POST localhost:8000/v1/index \
+  -H 'content-type: application/json' \
+  -d '{"repo":".","data_dir":"./data","mode":"incremental","run_go":true,"merge":true}'
 ```
 
 ## Architecture diagrams

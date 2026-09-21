@@ -20,6 +20,9 @@ class Intent(str, Enum):
     INTRODUCED = "introduced"
     BLAST_RADIUS = "blast_radius"
     CONCEPT_CENTRALITY = "concept_centrality"
+    SAFEST_PLACE = "safest_place"
+    ASSUMPTIONS = "assumptions"
+    LIKELY_BREAK = "likely_break"
     UNKNOWN = "unknown"
 
 
@@ -104,8 +107,11 @@ class IntentParser:
         concept = self._extract_concept(lower)
         target = self._extract_target(q)
 
-        if re.search(r"\b(hotspot|change most|churn|most (often|frequently) change|likely to break)\b", lower):
+        if re.search(r"\b(hotspot|change most|churn|most (often|frequently) change)\b", lower):
             return ParsedIntent(Intent.HOTSPOTS, concept=concept, target=target, raw=q, confidence=0.9)
+
+        if re.search(r"\b(likely to break|most fragile|break risk)\b", lower):
+            return ParsedIntent(Intent.LIKELY_BREAK, concept=concept, target=target, raw=q, confidence=0.88)
 
         if re.search(r"\b(who owns|ownership|who understands|maintainer|blame)\b", lower):
             return ParsedIntent(Intent.OWNERSHIP, concept=concept, target=target, raw=q, confidence=0.88)
@@ -116,10 +122,16 @@ class IntentParser:
         if re.search(r"\b(when (was|were).*(introduc|add|creat)|introduced|first appear|why was this abstraction)\b", lower):
             return ParsedIntent(Intent.INTRODUCED, concept=concept, target=target, raw=q, confidence=0.75)
 
+        if re.search(r"\b(safest place|where should (i|we) (implement|add|put)|best place to implement)\b", lower):
+            return ParsedIntent(Intent.SAFEST_PLACE, concept=concept, target=target, raw=q, confidence=0.9)
+
+        if re.search(r"\b(architectural assumption|assumptions|layer(ed)? architecture|violate)\b", lower):
+            return ParsedIntent(Intent.ASSUMPTIONS, concept=concept, target=target, raw=q, confidence=0.85)
+
         if re.search(r"\b(depend(s|ed)? on|what uses|coupled|indirectly coupled|imports)\b", lower):
             return ParsedIntent(Intent.DEPENDS_ON, concept=concept, target=target, raw=q, confidence=0.9)
 
-        if re.search(r"\b(central concept|concept centrality|key concepts|main concepts)\b", lower):
+        if re.search(r"\b(central concept|concept centrality|key concepts|main concepts|concepts are central|central concepts)\b", lower):
             return ParsedIntent(Intent.CONCEPT_CENTRALITY, concept=concept, target=target, raw=q, confidence=0.85)
 
         if re.search(r"\b(where (does|is|do)|where.*live|lives in|located)\b", lower) or concept:
@@ -159,10 +171,16 @@ class IntentParser:
 class Reasoner:
     """Build evidence bundles and template answers from graph store queries."""
 
-    def __init__(self, store: _Store, repo_id: str = "") -> None:
+    def __init__(
+        self,
+        store: _Store,
+        repo_id: str = "",
+        embeddings_path: str = "",
+    ) -> None:
         self.store = store
         self.repo_id = repo_id
         self.parser = IntentParser()
+        self.embeddings_path = embeddings_path or os.getenv("NCM_EMBEDDINGS_PATH", "./data/embeddings.json")
 
     def answer(self, question: str, repo_id: str | None = None) -> QueryResponse:
         from brain.logging_config import get_logger
@@ -178,8 +196,40 @@ class Reasoner:
             parsed.confidence,
         )
         response = self._dispatch(parsed, rid)
+        response = self._augment_vector_evidence(question, response)
         enhanced = self._maybe_llm_enhance(question, response)
         return enhanced
+
+    def _augment_vector_evidence(self, question: str, response: QueryResponse) -> QueryResponse:
+        """Attach nearest embedding neighbors when available (local JSON or Qdrant)."""
+        try:
+            from brain.embeddings.pipeline import load_embeddings, search_local
+            from brain.embeddings.qdrant_client import QdrantStore
+            from brain.embeddings.pipeline import embed_text
+
+            hits: list[dict[str, Any]] = []
+            qs = QdrantStore()
+            if qs.available():
+                vec = embed_text(question)
+                hits = qs.search(vec, limit=5, repo_id=self.repo_id)
+            if not hits:
+                emb = load_embeddings(self.embeddings_path)
+                hits = search_local(question, emb, limit=5)
+            if not hits:
+                return response
+            for h in hits[:5]:
+                response.evidence.append(
+                    {
+                        "type": "vector_neighbor",
+                        "node_id": h.get("id"),
+                        "score": h.get("score"),
+                    }
+                )
+            if response.confidence < 0.5 and hits:
+                response.confidence = min(0.75, response.confidence + 0.15)
+        except Exception:
+            pass
+        return response
 
     def _dispatch(self, parsed: ParsedIntent, repo_id: str) -> QueryResponse:
         if parsed.intent == Intent.WHERE_LIVES:
@@ -196,17 +246,24 @@ class Reasoner:
             return self._introduced(parsed, repo_id)
         if parsed.intent == Intent.CONCEPT_CENTRALITY:
             return self._concept_centrality(parsed, repo_id)
+        if parsed.intent == Intent.SAFEST_PLACE:
+            return self._safest_place(parsed, repo_id)
+        if parsed.intent == Intent.ASSUMPTIONS:
+            return self._assumptions(parsed, repo_id)
+        if parsed.intent == Intent.LIKELY_BREAK:
+            return self._likely_break(parsed, repo_id)
         return QueryResponse(
             answer=(
                 "I could not classify that question confidently. "
                 "Try asking where a concept lives, what depends on a module, "
-                "who owns a path, or which files are hotspots."
+                "who owns a path, safest place to implement a feature, or which files are hotspots."
             ),
             confidence=parsed.confidence,
             evidence=[],
             alternatives=[
                 "Where does authentication live?",
                 "What depends on internal/store?",
+                "Where should I implement retries?",
                 "Which files change most often?",
             ],
         )
@@ -403,6 +460,37 @@ class Reasoner:
                 alternatives=[],
             )
         owners = self.store.ownership_for_path(target, repo_id=repo_id)
+        # Subtree rollup when prefix matches many files
+        try:
+            from brain.architecture import ownership_rollup
+
+            rolled = ownership_rollup(owners, target)
+            if len(rolled) >= 1 and len(owners) > 1:
+                evidence = [
+                    {
+                        "type": "ownership_rollup",
+                        "owner": r.get("owner"),
+                        "score": r.get("score"),
+                        "path_prefix": target,
+                    }
+                    for r in rolled[:8]
+                ]
+                top = rolled[0]
+                answer = (
+                    f"Subsystem `{target}` is primarily understood by "
+                    f"**{top.get('owner')}** (rollup score {float(top.get('score') or 0):.2f} across matching files)."
+                )
+                if len(rolled) > 1:
+                    alts = ", ".join(f"{o.get('owner')} ({float(o.get('score') or 0):.2f})" for o in rolled[1:4])
+                    answer += f" Others: {alts}."
+                return QueryResponse(
+                    answer=answer,
+                    confidence=min(0.92, 0.5 + float(top.get("score") or 0) / 10),
+                    evidence=format_evidence_list(evidence),
+                    alternatives=[],
+                )
+        except Exception:
+            pass
         evidence = [
             {
                 "type": "ownership",
@@ -556,6 +644,90 @@ class Reasoner:
             confidence=0.8,
             evidence=format_evidence_list(evidence),
             alternatives=[f"Where does {scores[0][0]} live?"],
+        )
+
+    def _safest_place(self, parsed: ParsedIntent, repo_id: str) -> QueryResponse:
+        from brain.architecture import safest_place_for_concept
+
+        concept = parsed.concept or "persistence"
+        files = self.store.files_by_concept(concept, repo_id=repo_id)
+        repo_map = self.store.get_repo_map(repo_id) if repo_id else {"files": []}
+        paths = [str(f.get("path") or f.get("id") or "") for f in (repo_map.get("files") or [])]
+        result = safest_place_for_concept(concept, files, paths)
+        sug = result.get("suggestion")
+        if not sug:
+            return QueryResponse(
+                answer=f"No strong location for **{concept}** yet; index the repo and retag concepts.",
+                confidence=0.25,
+                evidence=[],
+                alternatives=[],
+            )
+        answer = (
+            f"Safest place to implement **{concept}**: `{sug['path']}` "
+            f"(layer={sug['layer']}, score={sug['score']})."
+        )
+        if result.get("assumptions"):
+            answer += " Assumptions: " + " ".join(result["assumptions"])
+        evidence = [
+            {"type": "architecture_suggestion", **sug},
+            *[{"type": "candidate", **c} for c in result.get("candidates") or []],
+        ]
+        return QueryResponse(
+            answer=answer,
+            confidence=min(0.9, 0.5 + float(sug.get("score") or 0) / 2),
+            evidence=format_evidence_list(evidence),
+            alternatives=[f"Where does {concept} live?"],
+        )
+
+    def _assumptions(self, parsed: ParsedIntent, repo_id: str) -> QueryResponse:
+        from brain.architecture import analyze_paths
+
+        repo_map = self.store.get_repo_map(repo_id) if repo_id else {"files": []}
+        paths = [str(f.get("path") or f.get("id") or "") for f in (repo_map.get("files") or [])]
+        analysis = analyze_paths(paths)
+        notes = []
+        lc = analysis.get("layer_counts") or {}
+        if lc.get("cmd") and lc.get("internal"):
+            notes.append("Layered cmd → internal/pkg layout appears present.")
+        if lc.get("infra") or analysis.get("patterns", {}).get("repository"):
+            notes.append("Persistence/infra modules exist; avoid putting domain logic only in cmd.")
+        if analysis.get("patterns", {}).get("handler"):
+            notes.append("Handler/controller pattern detected at the edge.")
+        if not notes:
+            notes.append("No strong architectural pattern inferred from paths alone.")
+        return QueryResponse(
+            answer="Architectural assumptions: " + " ".join(notes),
+            confidence=0.7 if len(notes) > 1 else 0.45,
+            evidence=[{"type": "architecture", "layers": lc, "patterns": list((analysis.get("patterns") or {}).keys())}],
+            alternatives=["Where should I implement auth?"],
+        )
+
+    def _likely_break(self, parsed: ParsedIntent, repo_id: str) -> QueryResponse:
+        from brain.predict import predict_likely_break
+
+        hotspots = self.store.hotspots(repo_id=repo_id, limit=15)
+        blast_by_id: dict[str, dict[str, Any]] = {}
+        for h in hotspots[:8]:
+            nid = str(h.get("id") or h.get("path") or "")
+            if nid:
+                blast_by_id[nid] = self.store.blast_radius(nid, max_depth=2)
+                path = str(h.get("path") or "")
+                if path and path != nid:
+                    blast_by_id[path] = blast_by_id[nid]
+        ranked = predict_likely_break(hotspots, blast_by_id, limit=8)
+        if not ranked:
+            return QueryResponse(
+                answer="No hotspot × blast-radius signal yet. Ensure git history was collected.",
+                confidence=0.25,
+                evidence=[],
+                alternatives=[],
+            )
+        top = ", ".join(f"`{r['path']}` (score={r['score']})" for r in ranked[:5])
+        return QueryResponse(
+            answer=f"Most likely to break (churn × blast radius): {top}.",
+            confidence=0.78,
+            evidence=[{"type": "break_risk", **r} for r in ranked],
+            alternatives=["Which files change most often?"],
         )
 
     def _maybe_llm_enhance(self, question: str, response: QueryResponse) -> QueryResponse:

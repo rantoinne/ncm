@@ -18,7 +18,9 @@ func Extract(path string, relPath string, lang string, tree *sitter.Tree, conten
 	if tree == nil {
 		return art
 	}
+
 	root := tree.RootNode()
+
 	switch lang {
 	case "go":
 		extractGo(&art, root, content)
@@ -79,6 +81,7 @@ func walk(n *sitter.Node, fn func(*sitter.Node) bool) {
 	if !fn(n) {
 		return
 	}
+
 	for i := 0; i < int(n.NamedChildCount()); i++ {
 		walk(n.NamedChild(i), fn)
 	}
@@ -95,6 +98,7 @@ func collectComments(root *sitter.Node, content []byte, types map[string]bool) [
 		}
 		return true
 	})
+
 	return out
 }
 
@@ -375,6 +379,7 @@ func extractPythonImport(art *FileArtifact, n *sitter.Node, content []byte) {
 	}
 }
 
+// artifact, AST, file content
 func extractTSJS(art *FileArtifact, root *sitter.Node, content []byte) {
 	art.Comments = collectComments(root, content, map[string]bool{
 		"comment":       true,

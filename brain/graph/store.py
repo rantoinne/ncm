@@ -16,6 +16,7 @@ class GraphStore(Protocol):
     def connect(self) -> None: ...
     def close(self) -> None: ...
     def clear_repo(self, repo_id: str) -> None: ...
+    def delete_nodes(self, node_ids: list[str], repo_id: str = "") -> int: ...
     def ingest_nodes(self, nodes: list[dict[str, Any]], repo_id: str = "") -> int: ...
     def ingest_edges(self, edges: list[dict[str, Any]], repo_id: str = "") -> int: ...
     def neighbors(self, node_id: str, depth: int = 1) -> list[dict[str, Any]]: ...
@@ -95,6 +96,28 @@ class InMemoryGraphStore:
             self._out[e["from"]].append(e)
             self._in[e["to"]].append(e)
         self._repo_nodes.pop(repo_id, None)
+
+    def delete_nodes(self, node_ids: list[str], repo_id: str = "") -> int:
+        """Tombstone nodes and incident edges (incremental merge)."""
+        ids = set(node_ids)
+        if not ids:
+            return 0
+        removed = 0
+        for nid in ids:
+            if nid in self.nodes:
+                self.nodes.pop(nid, None)
+                removed += 1
+            self._out.pop(nid, None)
+            self._in.pop(nid, None)
+            if repo_id:
+                self._repo_nodes.get(repo_id, set()).discard(nid)
+        self.edges = [e for e in self.edges if e["from"] not in ids and e["to"] not in ids]
+        self._out.clear()
+        self._in.clear()
+        for e in self.edges:
+            self._out[e["from"]].append(e)
+            self._in[e["to"]].append(e)
+        return removed
 
     def ingest_nodes(self, nodes: list[dict[str, Any]], repo_id: str = "") -> int:
         count = 0
@@ -450,6 +473,22 @@ class Neo4jGraphStore:
                 """,
                 repo_id=repo_id,
             )
+
+    def delete_nodes(self, node_ids: list[str], repo_id: str = "") -> int:
+        if not node_ids:
+            return 0
+        with self._session() as session:
+            result = session.run(
+                """
+                MATCH (n:NCMNode)
+                WHERE n.id IN $ids
+                DETACH DELETE n
+                RETURN count(*) AS c
+                """,
+                ids=list(node_ids),
+            )
+            record = result.single()
+            return int(record["c"]) if record else 0
 
     def ingest_nodes(self, nodes: list[dict[str, Any]], repo_id: str = "") -> int:
         count = 0

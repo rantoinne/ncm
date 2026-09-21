@@ -21,6 +21,14 @@ CONCEPTS: tuple[str, ...] = (
     "expiration",
     "protocol",
     "storage",
+    "queues",
+    "secrets",
+    "feature_flags",
+    "encryption",
+    "validation",
+    "metrics",
+    "serialization",
+    "workers",
 )
 
 # Path / filename / symbol-name heuristics (regex fragments, case-insensitive).
@@ -37,22 +45,38 @@ PATH_NAME_RULES: dict[str, list[str]] = {
     "expiration": [r"expir", r"ttl", r"timeout", r"deadline", r"lease", r"evict"],
     "protocol": [r"protocol", r"protobuf", r"proto", r"codec", r"serializer", r"parser", r"resp", r"wire"],
     "storage": [r"storage", r"blob", r"s3", r"filesystem", r"disk", r"volume", r"bucket"],
+    "queues": [r"queue", r"kafka", r"sqs", r"pubsub", r"rabbitmq", r"nats", r"broker"],
+    "secrets": [r"secret", r"vault", r"credential", r"password", r"api.?key", r"token"],
+    "feature_flags": [r"feature.?flag", r"launchdarkly", r"unleash", r"flag.?toggle", r"experiment"],
+    "encryption": [r"encrypt", r"decrypt", r"crypto", r"tls", r"ssl", r"cipher", r"aes"],
+    "validation": [r"validat", r"schema", r"sanitize", r"zod", r"joi", r"cerberus"],
+    "metrics": [r"metric", r"prometheus", r"statsd", r"otel", r"opentelemetry", r"histogram"],
+    "serialization": [r"serializ", r"marshal", r"unmarshal", r"json", r"protobuf", r"msgpack", r"avro"],
+    "workers": [r"worker", r"job", r"cron", r"scheduler", r"background", r"celery", r"sidekiq"],
 }
 
 # Import / dependency package signals.
 IMPORT_RULES: dict[str, list[str]] = {
     "auth": ["jwt", "oauth", "passport", "bcrypt", "crypto/x509", "golang.org/x/crypto"],
-    "cache": ["redis", "memcache", " ristretto", "groupcache", "lru"],
+    "cache": ["redis", "memcache", "ristretto", "groupcache", "lru"],
     "retry": ["retry", "backoff", "resilience4j", "tenacity", "cenkalti/backoff"],
     "config": ["viper", "envconfig", "dotenv", "pydantic_settings", "cobra", "flag"],
     "persistence": ["sql", "gorm", "sqlx", "sqlalchemy", "prisma", "mongo", "sqlite", "postgres", "database/sql"],
     "networking": ["net/http", "httpx", "requests", "axios", "grpc", "websocket", "fasthttp", "gin-gonic", "echo"],
-    "logging": ["slog", "zap", "logrus", "zerolog", "logging", "logrus", "pino", "winston"],
+    "logging": ["slog", "zap", "logrus", "zerolog", "logging", "pino", "winston"],
     "testing": ["testing", "pytest", "jest", "mocha", "testify", "gomock", "unittest"],
     "middleware": ["middleware", "chi/", "gorilla/mux", "express"],
     "expiration": ["ttl", "cache/"],
     "protocol": ["grpc", "protobuf", "proto", "thrift", "avro", "msgpack", "encoding/json", "encoding/gob"],
     "storage": ["aws-sdk", "minio", "s3", "blob", "os", "io/fs", "afero"],
+    "queues": ["kafka", "sarama", "sqs", "celery", "rq", "bull", "nats", "amqp"],
+    "secrets": ["vault", "secretsmanager", "keyring", "dotenv"],
+    "feature_flags": ["unleash", "launchdarkly", "flagsmith", "openfeature"],
+    "encryption": ["crypto", "tls", "openssl", "jose", "age"],
+    "validation": ["validator", "zod", "joi", "cerberus", "pydantic"],
+    "metrics": ["prometheus", "statsd", "opentelemetry", "otel"],
+    "serialization": ["protobuf", "msgpack", "avro", "encoding/json", "serde"],
+    "workers": ["celery", "sidekiq", "bull", "asynq", "machinery"],
 }
 
 
@@ -216,3 +240,68 @@ def concept_nodes(tags: list[dict[str, Any]], repo_id: str = "") -> list[dict[st
             props["repo_id"] = repo_id
         nodes.append({"id": cid, "type": "Concept", "label": concept, "props": props})
     return nodes
+
+
+def cluster_tag_from_embeddings(
+    embeddings: dict[str, list[float]],
+    *,
+    max_clusters: int = 8,
+    repo_id: str = "",
+) -> list[dict[str, Any]]:
+    """
+    Lightweight embedding clustering → TAGGED_AS edges.
+
+    Uses greedy centroid assignment (no sklearn required). Labels clusters
+    by majority keyword vote from node ids against CONCEPTS.
+    """
+    if len(embeddings) < 4:
+        return []
+    # Prefer file-level ids (no '#') to avoid exploding symbol tags
+    items = [(k, v) for k, v in embeddings.items() if "#" not in k][:400]
+    if len(items) < 4:
+        items = list(embeddings.items())[:200]
+    # Seed centroids from spaced samples
+    k = min(max_clusters, max(2, len(items) // 20))
+    step = max(1, len(items) // k)
+    centroids = [list(items[i * step][1]) for i in range(k)]
+    assign: list[int] = [0] * len(items)
+
+    def dist(a: list[float], b: list[float]) -> float:
+        return sum((x - y) ** 2 for x, y in zip(a, b))
+
+    for _ in range(5):
+        for i, (_, vec) in enumerate(items):
+            assign[i] = min(range(k), key=lambda c: dist(vec, centroids[c]))
+        for c in range(k):
+            members = [items[i][1] for i, a in enumerate(assign) if a == c]
+            if not members:
+                continue
+            dim = len(members[0])
+            centroids[c] = [sum(m[d] for m in members) / len(members) for d in range(dim)]
+
+    tags: list[dict[str, Any]] = []
+    for c in range(k):
+        member_ids = [items[i][0] for i, a in enumerate(assign) if a == c]
+        if len(member_ids) < 2:
+            continue
+        votes: dict[str, int] = {name: 0 for name in CONCEPTS}
+        for nid in member_ids:
+            lower = nid.lower()
+            for concept, pats in PATH_NAME_RULES.items():
+                for pat in pats:
+                    if re.search(pat, lower, re.IGNORECASE):
+                        votes[concept] = votes.get(concept, 0) + 1
+                        break
+        concept = max(votes, key=lambda x: votes[x])
+        if votes[concept] <= 0:
+            concept = f"cluster_{c}"
+        for nid in member_ids:
+            tags.append(
+                {
+                    "node_id": nid,
+                    "concept": concept,
+                    "confidence": 0.55,
+                    "evidence": [f"embedding_cluster:{c}", f"repo:{repo_id}"],
+                }
+            )
+    return tags

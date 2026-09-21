@@ -62,10 +62,15 @@ docker compose up -d   # Neo4j + Qdrant
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/health` | Liveness |
-| POST | `/v1/query` | Natural-language Q&A with evidence |
+| POST | `/v1/query` | Natural-language Q&A with evidence (+ vector neighbors) |
 | GET | `/v1/graph/path?from=&to=` | Shortest path |
-| POST | `/v1/index` | Ingest `data/` artifacts + concept tags |
+| POST | `/v1/index` | Ingest artifacts; optional `run_go`/`mode=full|incremental` + `repo` |
 | GET | `/v1/repo/{id}/map` | Repository map |
+| GET | `/v1/repo/{id}/snapshot?commit=` | Time-slice scaffold |
+
+Embeddings: hash by default; set `NCM_EMBED_BACKEND=sentence-transformers` for real models. Qdrant sync uses `QDRANT_URL` (default `http://localhost:6333`).
+
+MCP tool loop: `PYTHONPATH=. python -m brain.mcp` (JSON lines on stdin).
 
 ## Layout
 
@@ -80,15 +85,21 @@ ncm/
 └── .github/workflows/ci.yml
 ```
 
-## Phase 1 status
+## Phase status
 
-Implemented end-to-end MVP covering the Phase 1 plan milestones:
+**Phase 1 MVP** — done.
 
-- [x] Monorepo bootstrap (schemas, docker-compose, CI)
-- [x] Go discovery + multi-language AST → JSON artifacts
-- [x] Dependency graph (imports/calls/packages)
-- [x] Git history (churn, ownership, INTRODUCED_IN / MODIFIED_BY / OWNS)
-- [x] Python graph store (Neo4j + in-memory) with path/neighbor/blast queries
-- [x] Rule + import concept tagger → `TAGGED_AS`
-- [x] Reasoning layer + FastAPI (template synthesis; optional LLM if `OPENAI_API_KEY`)
-- [x] Incremental index + checkpoint/watch
+**Phase 1.5** — largely implemented:
+
+- [x] Embeddings pipeline (hash default; optional sentence-transformers) + Qdrant sync/search
+- [x] Expanded concepts + embedding-cluster tags
+- [x] Vector neighbors in reasoner evidence
+- [x] Stable symbol IDs `{repo}:{commit}:{path}#{name}` when commit known
+- [x] `EXTENDS` / `IMPLEMENTS` / `TESTS` edges; `REMOVED_IN` git hints
+- [x] Git re-enabled on `full` + refresh on incremental
+- [x] Architecture heuristics + safest-place / assumptions / likely-to-break intents
+- [x] `POST /v1/index` can run Go indexer; merge mode; schema validation warnings
+- [x] ADR/docs ingest, capsules, MCP tool server, Neo4j migration stub
+- [x] Broader language *discovery* (Rust/Java/…); AST parse still Go/Python/TS/JS
+
+**Phase 2/3** — scaffolds: snapshot API, docs graph, MCP, predict/compress modules (full GNN/runtime/cross-repo still future).

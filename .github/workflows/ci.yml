@@ -33,9 +33,13 @@ jobs:
         env:
           PYTHONPATH: .
         run: |
-          python -c "import brain; import brain.loader; import brain.graph; import brain.concepts; import brain.embeddings; import brain.reasoning; import brain.explain; import brain.api.main; print('brain', brain.__version__)"
+          python -c "import brain; import brain.loader; import brain.graph; import brain.concepts; import brain.embeddings; import brain.reasoning; import brain.explain; import brain.api.main; import brain.architecture; import brain.docs; import brain.mcp; print('brain', brain.__version__)"
           python -m compileall -q brain
           python -c "from brain.embeddings.pipeline import embed_texts; assert len(embed_texts(['hello'])[0]) == 64"
+      - name: Pytest
+        env:
+          PYTHONPATH: .
+        run: pytest -q brain
 
   e2e:
     name: Index + query smoke
@@ -66,5 +70,7 @@ jobs:
           assert r["files"] > 0 and r["nodes_ingested"] > 0
           ans = Reasoner(s, repo_id=r["repo_id"]).answer("Which files change most often?")
           assert ans.answer
-          print("e2e ok", r["repo_id"], ans.answer[:120])
+          ans2 = Reasoner(s, repo_id=r["repo_id"]).answer("Where should I implement persistence?")
+          assert ans2.answer
+          print("e2e ok", r["repo_id"], ans.answer[:80], "|", ans2.answer[:80])
           PY

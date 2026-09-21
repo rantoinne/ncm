@@ -18,7 +18,7 @@ type FileArtifact struct {
 	Path      string   `json:"path"`
 	RelPath   string   `json:"rel_path"`
 	Language  string   `json:"language"`
-	Package   string   `json:"package,omitempty"`
+	Package   string   `json:"package,omitempty"` // python only
 	Imports   []string `json:"imports,omitempty"`
 	Symbols   []Symbol `json:"symbols,omitempty"`
 	Comments  []string `json:"comments,omitempty"`

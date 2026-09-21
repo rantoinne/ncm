@@ -5,7 +5,6 @@ import (
 	"os"
 
 	ncmindex "github.com/rantoinne/ncm/cmd/ncm-index"
-	"github.com/rantoinne/ncm/internal/logging"
 )
 
 func main() {
@@ -19,7 +18,7 @@ func main() {
 	// os.Stdout = logfile
 	// os.Stderr = logfile
 
-	logging.Setup(logging.Options{})
+	// logging.Setup(logging.Options{})
 	args := os.Args[1:]
 	if err := ncmindex.Run(args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -132,7 +131,6 @@ func ParseAll(ctx context.Context, langFiles LanguageFiles) <-chan ParseResult {
 
 	go func() {
 		wg.Wait()
-		fmt.Println("Waiting for all workers to finish")
 		close(out)
 	}()
 
@@ -158,6 +156,7 @@ func ParseAndExtract(ctx context.Context, root string, langFiles LanguageFiles) 
 			rel = res.Path
 		}
 		art := Extract(res.Path, rel, res.Lang, res.Tree, res.Content)
+
 		sum := sha256.Sum256(res.Content)
 		art.Hash = hex.EncodeToString(sum[:])
 		if res.Tree != nil {

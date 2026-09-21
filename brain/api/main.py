@@ -13,10 +13,18 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from brain import __version__
-from brain.concepts.tagger import concept_nodes, tag_artifacts, tags_to_edges
-from brain.embeddings.pipeline import embed_file_artifacts
+from brain.concepts.tagger import (
+    cluster_tag_from_embeddings,
+    concept_nodes,
+    tag_artifacts,
+    tags_to_edges,
+)
+from brain.compress import build_capsules
+from brain.docs import discover_docs, docs_to_graph
+from brain.embeddings.pipeline import embed_file_artifacts, load_embeddings
 from brain.graph.store import InMemoryGraphStore, Neo4jGraphStore, create_store
 from brain.loader.artifacts import load_all
+from brain.loader.validate import validate_data_dir
 from brain.logging_config import get_logger, setup_logging
 from brain.reasoning.engine import Reasoner, path_between
 
@@ -89,11 +97,54 @@ class QueryRequest(BaseModel):
 
 class IndexRequest(BaseModel):
     data_dir: str = "./data"
+    repo: str | None = None
+    mode: str = Field(default="ingest", description="ingest | full | incremental")
+    merge: bool = Field(
+        default=False,
+        description="If true, upsert without clear_repo (incremental brain merge)",
+    )
+    run_go: bool = Field(
+        default=False,
+        description="If true (or mode full/incremental), run Go ncm indexer first",
+    )
 
 
-def _ingest_bundle(data_dir: str) -> dict[str, Any]:
+def _run_go_index(repo: str, data_dir: str, mode: str) -> dict[str, Any]:
+    import shutil
+    import subprocess
+
+    binary = shutil.which("ncm") or ""
+    cmd: list[str]
+    if binary:
+        cmd = [binary, mode if mode in ("full", "incremental") else "full", "--repo", repo, "--out", data_dir]
+    else:
+        cmd = [
+            "go",
+            "run",
+            ".",
+            mode if mode in ("full", "incremental") else "full",
+            "--repo",
+            repo,
+            "--out",
+            data_dir,
+        ]
+    log.info("running go indexer cmd=%s", cmd)
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=os.getcwd())
+    return {
+        "cmd": cmd,
+        "returncode": proc.returncode,
+        "stdout": (proc.stdout or "")[-2000:],
+        "stderr": (proc.stderr or "")[-2000:],
+        "ok": proc.returncode == 0,
+    }
+
+
+def _ingest_bundle(data_dir: str, *, merge: bool = False) -> dict[str, Any]:
     global _default_repo_id
-    log.info("ingest starting data_dir=%s", data_dir)
+    log.info("ingest starting data_dir=%s merge=%s", data_dir, merge)
+    warnings = validate_data_dir(data_dir)
+    for w in warnings:
+        log.warning("artifact validation: %s", w)
     bundle = load_all(data_dir)
     repo_id = bundle.manifest.repo_id
     _default_repo_id = repo_id
@@ -106,7 +157,8 @@ def _ingest_bundle(data_dir: str) -> dict[str, Any]:
         bundle.manifest.commit_sha[:12] if bundle.manifest.commit_sha else "",
     )
     store = get_store()
-    store.clear_repo(repo_id)
+    if not merge:
+        store.clear_repo(repo_id)
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -245,7 +297,7 @@ def _ingest_bundle(data_dir: str) -> dict[str, Any]:
         if not hint.from_id or not hint.to:
             continue
         src, dst = hint.from_id, hint.to
-        if hint.type == "INTRODUCED_IN":
+        if hint.type in ("INTRODUCED_IN", "REMOVED_IN"):
             if not dst.startswith("commit:"):
                 dst = f"commit:{dst}"
         elif hint.type == "MODIFIED_BY":
@@ -327,25 +379,44 @@ def _ingest_bundle(data_dir: str) -> dict[str, Any]:
             }
         )
 
-    # Concept tagging
+    # Concept tagging (rules + embedding clusters)
     tags = tag_artifacts(bundle.files)
+    emb_path = Path(data_dir) / "embeddings.json"
+    embed_file_artifacts(bundle.files, emb_path, sync_qdrant=True, repo_id=repo_id)
+    cluster_tags = cluster_tag_from_embeddings(load_embeddings(emb_path), repo_id=repo_id)
+    tags.extend(cluster_tags)
     nodes.extend(concept_nodes(tags, repo_id=repo_id))
     edges.extend(tags_to_edges(tags))
-    log.info("concept tagging complete tags=%s", len(tags))
+    log.info("concept tagging complete tags=%s clusters=%s", len(tags), len(cluster_tags))
 
-    # Embeddings (hash features)
-    emb_path = Path(data_dir) / "embeddings.json"
-    embed_file_artifacts(bundle.files, emb_path)
-    log.debug("embeddings written path=%s", emb_path)
+    # ADR / design docs
+    root = bundle.manifest.root or ""
+    if root and Path(root).exists():
+        docs = discover_docs(root)
+        doc_nodes, doc_edges = docs_to_graph(docs, root, repo_id)
+        nodes.extend(doc_nodes)
+        edges.extend(doc_edges)
+        log.info("docs ingested count=%s", len(doc_nodes))
 
     n_count = store.ingest_nodes(nodes, repo_id=repo_id)
     e_count = store.ingest_edges(edges, repo_id=repo_id)
+
+    # Knowledge capsules (Phase 3 scaffold)
+    repo_map = store.get_repo_map(repo_id)
+    concept_counts: dict[str, int] = {}
+    for t in tags:
+        concept_counts[t["concept"]] = concept_counts.get(t["concept"], 0) + 1
+    capsules = build_capsules(repo_map, concept_counts)
+    if capsules:
+        store.ingest_nodes(capsules, repo_id=repo_id)
+
     log.info(
-        "ingest complete repo_id=%s nodes=%s edges=%s concepts=%s",
+        "ingest complete repo_id=%s nodes=%s edges=%s concepts=%s capsules=%s",
         repo_id,
         n_count,
         e_count,
         len(tags),
+        len(capsules),
     )
 
     return {
@@ -356,6 +427,9 @@ def _ingest_bundle(data_dir: str) -> dict[str, Any]:
         "concepts_tagged": len(tags),
         "embeddings_path": str(emb_path),
         "commit_sha": bundle.manifest.commit_sha,
+        "capsules": len(capsules),
+        "validation_warnings": warnings,
+        "merge": merge,
     }
 
 
@@ -398,10 +472,21 @@ def graph_path(
 @app.post("/v1/index")
 def index_repo(body: IndexRequest) -> dict[str, Any]:
     data_dir = Path(body.data_dir)
+    go_result = None
+    should_run = body.run_go or body.mode in ("full", "incremental")
+    if should_run:
+        if not body.repo:
+            raise HTTPException(status_code=400, detail="repo is required when run_go/mode=full|incremental")
+        go_result = _run_go_index(body.repo, str(data_dir), body.mode if body.mode in ("full", "incremental") else "full")
+        if not go_result["ok"]:
+            raise HTTPException(status_code=500, detail={"message": "go index failed", "go": go_result})
     if not data_dir.exists():
         raise HTTPException(status_code=400, detail=f"data_dir not found: {data_dir}")
     try:
-        return _ingest_bundle(str(data_dir))
+        result = _ingest_bundle(str(data_dir), merge=body.merge)
+        if go_result:
+            result["go"] = go_result
+        return result
     except FileNotFoundError as exc:
         log.warning("index missing data: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -415,3 +500,19 @@ def repo_map(repo_id: str) -> dict[str, Any]:
     store = get_store()
     log.debug("repo map repo_id=%s", repo_id)
     return store.get_repo_map(repo_id)
+
+
+@app.get("/v1/repo/{repo_id}/snapshot")
+def repo_snapshot(repo_id: str, commit: str = Query("")) -> dict[str, Any]:
+    """Phase 2 time-slice scaffold: filter commit-linked nodes when commit provided."""
+    store = get_store()
+    base = store.get_repo_map(repo_id)
+    if not commit:
+        return {"repo_id": repo_id, "commit": "", "map": base, "note": "full current map"}
+    # Soft filter: include INTRODUCED_IN evidence mentioning commit when available
+    return {
+        "repo_id": repo_id,
+        "commit": commit,
+        "map": base,
+        "note": "Phase 2 scaffold — full map returned; temporal filtering uses INTRODUCED_IN/REMOVED_IN edges in queries",
+    }
