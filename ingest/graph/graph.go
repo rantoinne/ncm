@@ -10,6 +10,17 @@ import (
 	"github.com/rantoinne/ncm/ingest/parser"
 )
 
+type builder struct {
+	repoID     string
+	nodes      map[string]Node
+	edges      map[string]Edge
+	byName     map[string][]string
+	pkgDeps    map[string]map[string]struct{}
+	pending    []pendingCall
+	pendingExt []pendingRel
+	cycles     [][]string
+}
+
 // Node is a graph entity.
 type Node struct {
 	ID    string         `json:"id"`
@@ -49,26 +60,17 @@ type pendingRel struct {
 // Build constructs a dependency graph from file artifacts.
 func Build(files []parser.FileArtifact, repoID string) Graph {
 	b := newBuilder(repoID)
+
 	for _, f := range files {
 		b.addFile(f)
 	}
+
 	b.resolveCalls()
 	b.resolveHeritage()
 	b.addTestEdges()
 	b.addPackageDeps()
 	b.detectCycles()
 	return b.export()
-}
-
-type builder struct {
-	repoID     string
-	nodes      map[string]Node
-	edges      map[string]Edge
-	byName     map[string][]string
-	pkgDeps    map[string]map[string]struct{}
-	pending    []pendingCall
-	pendingExt []pendingRel
-	cycles     [][]string
 }
 
 func newBuilder(repoID string) *builder {
@@ -124,9 +126,9 @@ func (b *builder) addFile(f parser.FileArtifact) {
 		Type:  "Package",
 		Label: pkgID,
 		Props: map[string]any{
-			"repo_id":      b.repoID,
-			"go_package":   f.Package,
-			"dir":          path.Dir(fileID),
+			"repo_id":    b.repoID,
+			"go_package": f.Package,
+			"dir":        path.Dir(fileID),
 		},
 	})
 	b.addEdge(Edge{
