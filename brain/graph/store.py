@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections import defaultdict, deque
 from typing import Any, Protocol, runtime_checkable
@@ -49,6 +50,33 @@ def _edge_dict(edge: dict[str, Any]) -> dict[str, Any]:
         "confidence": float(edge.get("confidence", 1.0)),
         "evidence": list(edge.get("evidence") or []),
     }
+
+
+def _neo4j_prop_value(value: Any) -> Any | None:
+    """Coerce a Python value into a Neo4j-legal property (primitive or array thereof)."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, list):
+        if all(isinstance(x, bool) or isinstance(x, (str, int, float)) for x in value):
+            return value
+        return json.dumps(value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    return str(value)
+
+
+def _neo4j_safe_props(props: dict[str, Any]) -> dict[str, Any]:
+    """Drop/serialize nested values Neo4j cannot store as node properties."""
+    out: dict[str, Any] = {}
+    for key, value in props.items():
+        coerced = _neo4j_prop_value(value)
+        if coerced is not None:
+            out[key] = coerced
+    return out
 
 
 DEP_EDGE_TYPES = frozenset(
@@ -504,19 +532,13 @@ class Neo4jGraphStore:
                 }
                 if rid:
                     props["repo_id"] = rid
-                # Flatten JSON-serializable props only
-                flat = {
-                    k: v
-                    for k, v in props.items()
-                    if isinstance(v, (str, int, float, bool, list, type(None)))
-                }
                 session.run(
                     """
                     MERGE (n:NCMNode {id: $id})
                     SET n += $props
                     """,
                     id=node["id"],
-                    props=flat,
+                    props=_neo4j_safe_props(props),
                 )
                 count += 1
         return count

@@ -10,3 +10,5 @@ __pycache__/
 *.egg-info/
 app.log
 out/
+.env
+.DS_Store
